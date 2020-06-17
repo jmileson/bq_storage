@@ -1,0 +1,7 @@
+venv/
+
+*.pyc
+
+.envrc
+
+session.txt
