@@ -14,12 +14,21 @@ Run a query and construct a read session.  Persist session info to a file to sim
 "over the wire" transmission.
 
 ```
-python paging.py construct session.txt
+python paging.py construct data/session.txt
 ```
+
+You can also configure the number of streams with 
+
+```
+python paging.py construct data/session.txt -n 10
+```
+
+Be warned that Google doesn't respect this number if they determine that the number of
+streams won't improve throughput.
 
 ## Consume a session
 Simulate reconstructing and consuming a read session.
 
 ```
-python paging.py consume session.txt
+python paging.py consume data/session.txt
 ```

@@ -1,5 +1,6 @@
 import csv
 import os
+import glob
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -75,7 +76,7 @@ class RowReader:
                 write_duration += time.perf_counter() - write_start
                 row_count += 1
             total_duration = time.perf_counter() - start_time
-        file_size = os.path.getsize(path)
+        file_size = to_mb(os.path.getsize(path))
         return (path, row_count, total_duration, write_duration, file_size)
 
     def read(self):
@@ -104,6 +105,10 @@ class RowReader:
         return rows_iters
 
 
+def to_mb(val):
+    return val / 1024 ** 2
+
+
 @click.group()
 def cli():
     pass
@@ -129,6 +134,10 @@ def construct(path, num_streams):
 @cli.command()
 @click.argument("path")
 def consume(path):
+    files = glob.glob("data/*.csv")
+    for file_ in files:
+        os.remove(file_)
+
     with open(path, mode="rb") as f:
         session_data = f.read()
 
@@ -139,13 +148,21 @@ def consume(path):
     rows = row_reader.read()
     duration = time.perf_counter() - start_time
     print(f"done reading, took {duration} s wall-clock time")
-    total_bytes = 0
+    total_mb = 0
+    total_thread_duration = 0
+    total_io_duration = 0
     for row in rows:
-        total_bytes += row[4]
+        total_mb += row[4]
+        total_thread_duration += row[2]
+        total_io_duration += row[3]
         print(
-            f"{row[0]} got {row[1]} rows: {row[2]} thread time {row[3]} thread time in diskio {row[4]} file size in bytes"
+            f"{row[0]} got {row[1]} rows: {row[2]} thread time {row[3]} thread time in diskio {row[4]} file size in MiB"
         )
-    print(f"{total_bytes} total bytes {total_bytes/duration} bps")
+
+    print(f"{total_mb} total MiB {total_mb/duration} MiB/s")
+    print(
+        f"{total_mb / (total_thread_duration - total_io_duration)} MiB/s not in disk io"
+    )
 
 
 if __name__ == "__main__":
