@@ -4,7 +4,7 @@
 git clone git@github.com:jmileson/bq_storage.git
 cd bq_storage
 python3 -m venv venv
-source tutorial-env/bin/activate
+source env/bin/activate
 pip install -r requirements.txt
 ```
 
