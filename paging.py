@@ -1,4 +1,7 @@
-from itertools import chain
+import csv
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import click
 
@@ -10,17 +13,19 @@ from google.cloud.bigquery_storage_v1beta1.types import (
 )
 
 
-class BigQueryReader:
+class BigQuerySessionConstructor:
     PROJECT = "dl-security-test"
 
-    def __init__(self, stmt):
+    def __init__(self, stmt, num_streams):
         self.stmt = stmt
+        self.num_streams = num_streams
         self.bq_client = bigquery.Client(project=self.PROJECT)
 
         self.bq_storage_client = bigquery_storage_v1beta1.BigQueryStorageClient()
         self.run()
 
     def run(self):
+        """Run the query and construct the ReadSession"""
         job_config = bigquery.QueryJobConfig(use_query_cache=True)
         self.job = self.bq_client.query(self.stmt, job_config=job_config)
 
@@ -30,11 +35,18 @@ class BigQueryReader:
         # build session
         table_ref = self.job.destination.to_bqstorage()
         parent = "projects/{}".format(self.PROJECT)
+
+        # default number of streams chosen by google to
+        # get reasonable read throughput
         self.session = self.bq_storage_client.create_read_session(
-            table_ref, parent, format_=bigquery_storage_v1beta1.enums.DataFormat.ARROW,
+            table_ref,
+            parent,
+            requested_streams=self.num_streams,
+            format_=bigquery_storage_v1beta1.enums.DataFormat.ARROW,
         )
 
     def serialize(self):
+        """Serialize the session for later consumption."""
         return self.session.SerializeToString()
 
 
@@ -42,18 +54,54 @@ class RowReader:
     def __init__(self, session_data):
         self.session = ReadSession.FromString(session_data)
 
-        self.bq_storage_client = bigquery_storage_v1beta1.BigQueryStorageClient()
+        self.client = bigquery_storage_v1beta1.BigQueryStorageClient()
 
-    @property
-    def stream_positions(self):
-        return [StreamPosition(stream=s) for s in self.session.streams]
+    def write(self, i, row_iter):
+        path = f"data/stream_{i}.csv"
+        print(f"starting read for {path}")
+        row_count = 0
+        write_duration = 0
+        with open(path, mode="w") as f:
+            writer = csv.writer(f)
+            cols = None
+            start_time = time.perf_counter()
+            for row in row_iter:
+                if cols is None:
+                    cols = list(sorted(row.keys()))
+
+                out = [row[k] for k in cols]
+                write_start = time.perf_counter()
+                writer.writerow(out)
+                write_duration += time.perf_counter() - write_start
+                row_count += 1
+            total_duration = time.perf_counter() - start_time
+        file_size = os.path.getsize(path)
+        return (path, row_count, total_duration, write_duration, file_size)
 
     def read(self):
-        readers = [self.bq_storage_client.read_rows(
-            p) for p in self.stream_positions]
+        stream_positions = [StreamPosition(stream=s)
+                            for s in self.session.streams]
 
+        readers = [self.client.read_rows(p) for p in stream_positions]
         iters = [r.rows(self.session) for r in readers]
-        return chain.from_iterable(iters)
+
+        rows_iters = []
+        with ThreadPoolExecutor(max_workers=len(iters)) as executor:
+            futures = {
+                executor.submit(self.write, i, iter_): i
+                for i, iter_ in enumerate(iters)
+            }
+            for future in as_completed(futures):
+                try:
+                    rows = future.result()
+                except Exception as exc:
+                    i = futures[future]
+                    print(f"stream index {i} generated an exception: {exc}")
+                else:
+                    print(f"stream {rows[0]} complete, got {rows[1]} rows")
+                    rows_iters.append(rows)
+
+        return rows_iters
 
 
 @click.group()
@@ -63,15 +111,16 @@ def cli():
 
 @cli.command()
 @click.argument("path")
-def construct(path):
+@click.option("--num-streams", "-n", type=int, default=0)
+def construct(path, num_streams):
     stmt = """
         SELECT *
-        -- FROM `dl-security-test.appsci_spire.vessel_pings`;
-        FROM `dl-security-test.platform.ports_v1`;
+        FROM `dl-security-test.appsci_spire.vessel_pings`
+        LIMIT 20000000
     """
-    bq_reader = BigQueryReader(stmt)
+    ctor = BigQuerySessionConstructor(stmt, num_streams)
 
-    session_data = bq_reader.serialize()
+    session_data = ctor.serialize()
 
     with open(path, mode="wb") as f:
         f.write(session_data)
@@ -85,9 +134,20 @@ def consume(path):
 
     row_reader = RowReader(session_data)
 
-    rows = list(row_reader.read())
-    print(rows[1])
+    print("starting reads")
+    start_time = time.perf_counter()
+    rows = row_reader.read()
+    duration = time.perf_counter() - start_time
+    print(f"done reading, took {duration} s wall-clock time")
+    total_bytes = 0
+    for row in rows:
+        total_bytes += row[4]
+        print(
+            f"{row[0]} got {row[1]} rows: {row[2]} thread time {row[3]} thread time in diskio {row[4]} file size in bytes"
+        )
+    print(f"{total_bytes} total bytes {total_bytes/duration} bps")
 
 
 if __name__ == "__main__":
+    os.makedirs("data", exist_ok=True)
     cli()

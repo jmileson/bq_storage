@@ -4,4 +4,4 @@ venv/
 
 .envrc
 
-session.txt
+data/
