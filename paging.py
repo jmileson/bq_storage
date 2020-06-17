@@ -149,20 +149,13 @@ def consume(path):
     duration = time.perf_counter() - start_time
     print(f"done reading, took {duration} s wall-clock time")
     total_mb = 0
-    total_thread_duration = 0
-    total_io_duration = 0
     for row in rows:
         total_mb += row[4]
-        total_thread_duration += row[2]
-        total_io_duration += row[3]
         print(
-            f"{row[0]} got {row[1]} rows: {row[2]} thread time {row[3]} thread time in diskio {row[4]} file size in MiB"
+            f"{row[0]} got {row[1]} rows: {row[2]} thread time {row[3]} thread time in diskio {row[4]} file size in MiB {row[4]/(row[2] - row[3])} MiB/s network io"
         )
 
     print(f"{total_mb} total MiB {total_mb/duration} MiB/s")
-    print(
-        f"{total_mb / (total_thread_duration - total_io_duration)} MiB/s not in disk io"
-    )
 
 
 if __name__ == "__main__":
